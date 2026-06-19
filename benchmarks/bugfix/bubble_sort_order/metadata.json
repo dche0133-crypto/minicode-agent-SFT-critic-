@@ -1,0 +1,8 @@
+{
+  "id": "bubble_sort_order",
+  "type": "bugfix",
+  "check_command": "python -m pytest -q",
+  "max_steps": 16,
+  "expected_files": ["bubble_sort.py"],
+  "tags": ["python", "sorting", "bugfix"]
+}

@@ -1,0 +1,1 @@
+Fix the bug in bubble_sort.py. Keep the implementation simple, preserve the public API, run the tests, inspect the diff, and return a concise summary.
