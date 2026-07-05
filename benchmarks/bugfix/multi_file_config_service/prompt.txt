@@ -1,0 +1,1 @@
+Fix the multi-file configuration service. Use defaults from settings.py, validate positive timeout and non-negative retries, and preserve the public request_options API.

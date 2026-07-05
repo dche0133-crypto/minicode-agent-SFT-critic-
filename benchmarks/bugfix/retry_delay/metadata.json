@@ -1,0 +1,17 @@
+{
+  "id": "retry_delay",
+  "type": "bugfix",
+  "difficulty": "easy",
+  "check_command": "python -m pytest -q",
+  "max_steps": 16,
+  "max_patch_lines": 80,
+  "expected_files": [
+    "retry_delay.py"
+  ],
+  "tags": [
+    "python",
+    "backoff",
+    "boundary",
+    "easy"
+  ]
+}

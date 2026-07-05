@@ -1,0 +1,24 @@
+{
+  "accept_if": [
+    "public_tests_passed",
+    "fewer_public_test_failures",
+    "fewer_public_test_errors"
+  ],
+  "reject_if": [
+    "introduced_syntax_error",
+    "introduced_collection_error",
+    "no_public_test_improvement",
+    "edit_phase_invalid",
+    "verify_phase_invalid"
+  ],
+  "rollback_on_reject": false,
+  "diagnose_max_steps": 1,
+  "verify_max_steps": 1,
+  "edit_max_steps": null,
+  "require_harness_evidence_after_attempt": 2,
+  "require_harness_evidence_for": [
+    "test_failure",
+    "assertion_failure",
+    "early_stop_after_test_failure"
+  ]
+}

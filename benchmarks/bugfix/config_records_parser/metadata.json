@@ -1,0 +1,10 @@
+{
+  "id": "config_records_parser",
+  "type": "bugfix",
+  "difficulty": "medium",
+  "check_command": "python -m pytest -q",
+  "max_steps": 16,
+  "expected_files": ["config_records.py"],
+  "max_patch_lines": 60,
+  "tags": ["python", "parsing", "validation", "edge-case", "bugfix"]
+}

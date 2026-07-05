@@ -86,3 +86,39 @@ def test_classify_patch_too_large():
     analysis = classify_failure(base_result(), training, {"expected_files": ["target.py"], "max_patch_lines": 3})
 
     assert analysis["failure_type"] == "patch_too_large"
+
+
+def test_classify_syntax_error_before_repeated_tool_call():
+    training = trajectory(
+        tool("run_tests", {"command": "pytest"}, "exit_code: 1", False),
+        tool("write_file", {"path": "target.py", "content": "```python"}),
+        tool("write_file", {"path": "target.py", "content": "```python"}),
+    )
+    result = base_result(public_result={"stderr": "SyntaxError: invalid syntax"})
+
+    analysis = classify_failure(result, training, {"expected_files": ["target.py"]})
+
+    assert analysis["failure_type"] == "syntax_error"
+    assert analysis["decision"]["next_action"] == "repair_syntax"
+
+
+def test_classify_tool_protocol_error():
+    training = trajectory(tool("run_tests", {"command": "pytest"}, "exit_code: 1", False))
+    result = base_result(final_answer="[tool:write_file] config.py")
+
+    analysis = classify_failure(result, training, {})
+
+    assert analysis["failure_type"] == "tool_protocol_error"
+    assert analysis["decision"]["next_action"] == "retry_structured_tool_call"
+
+
+def test_controlled_retry_failure_is_not_mislabeled_as_early_stop():
+    training = trajectory(tool("run_tests", {"command": "pytest"}, "exit_code: 1", False))
+    result = base_result(
+        final_answer="Stopped after reaching the step limit without a final answer.",
+        critic_retries_used=1,
+    )
+
+    analysis = classify_failure(result, training, {"expected_files": ["target.py"]})
+
+    assert analysis["failure_type"] == "test_failure"

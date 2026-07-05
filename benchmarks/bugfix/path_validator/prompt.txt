@@ -1,0 +1,1 @@
+Fix path_validator.py. Accept only non-empty relative paths that do not contain parent traversal and reject Unix or Windows absolute paths.

@@ -1,0 +1,17 @@
+{
+  "id": "dependency_order",
+  "type": "bugfix",
+  "difficulty": "hard",
+  "check_command": "python -m pytest -q",
+  "max_steps": 20,
+  "max_patch_lines": 120,
+  "expected_files": [
+    "dependency_order.py"
+  ],
+  "tags": [
+    "python",
+    "graphs",
+    "topological-sort",
+    "hard"
+  ]
+}

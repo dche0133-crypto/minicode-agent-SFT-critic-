@@ -1,0 +1,1 @@
+Fix slugify_title.py. Produce lowercase ASCII slugs: trim, keep letters/digits, collapse non-alphanumeric runs into one hyphen, and remove edge hyphens.

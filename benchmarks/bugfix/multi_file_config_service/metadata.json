@@ -1,0 +1,18 @@
+{
+  "id": "multi_file_config_service",
+  "type": "bugfix",
+  "difficulty": "hard",
+  "check_command": "python -m pytest -q",
+  "max_steps": 20,
+  "max_patch_lines": 120,
+  "expected_files": [
+    "service.py",
+    "settings.py"
+  ],
+  "tags": [
+    "python",
+    "multi-file",
+    "configuration",
+    "hard"
+  ]
+}

@@ -1,0 +1,1 @@
+Fix dependency_order.py. Return a deterministic topological order with dependencies first, include referenced leaves absent from graph keys, and raise ValueError on cycles.

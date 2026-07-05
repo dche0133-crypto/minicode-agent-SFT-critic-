@@ -1,0 +1,17 @@
+{
+  "id": "rolling_rate_limit",
+  "type": "bugfix",
+  "difficulty": "hard",
+  "check_command": "python -m pytest -q",
+  "max_steps": 20,
+  "max_patch_lines": 120,
+  "expected_files": [
+    "rolling_rate_limit.py"
+  ],
+  "tags": [
+    "python",
+    "algorithms",
+    "time-window",
+    "hard"
+  ]
+}

@@ -1,0 +1,1 @@
+Fix template_renderer.py. Support {{name}}, {{name|default}}, and escaped placeholders written as \{{name}}. Unknown required placeholders raise KeyError.

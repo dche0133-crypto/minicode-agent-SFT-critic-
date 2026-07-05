@@ -1,0 +1,1 @@
+Fix config_defaults.py. Return a new configuration with retries=3, timeout=30, and database.port=5432 defaults; never mutate caller input.

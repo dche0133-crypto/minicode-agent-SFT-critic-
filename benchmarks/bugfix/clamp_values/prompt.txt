@@ -1,0 +1,1 @@
+Fix clamp_values.py. clamp(value, lower, upper) must return value constrained to the inclusive range. Keep the API unchanged and run tests.

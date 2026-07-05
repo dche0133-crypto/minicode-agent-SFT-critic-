@@ -1,0 +1,1 @@
+Fix parse_bool_flag.py. parse_bool accepts bools and case-insensitive true/false, yes/no, 1/0 strings with surrounding whitespace; unknown strings raise ValueError.

@@ -1,0 +1,17 @@
+{
+  "id": "date_window",
+  "type": "bugfix",
+  "difficulty": "medium",
+  "check_command": "python -m pytest -q",
+  "max_steps": 16,
+  "max_patch_lines": 80,
+  "expected_files": [
+    "date_window.py"
+  ],
+  "tags": [
+    "python",
+    "datetime",
+    "edge-case",
+    "medium"
+  ]
+}

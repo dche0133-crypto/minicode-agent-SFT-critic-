@@ -308,6 +308,9 @@ Combine benchmark-derived and synthetic data:
 python scripts/build_critic_sft.py --reports benchmark_results --include-success --synthetic-per-type 50 --out datasets/critic_sft.jsonl
 ```
 
+Cloud LoRA training scripts live under `cloud/`. See `cloud/README.md` for the
+minimal upload files and commands.
+
 &nbsp;
 ## Main CLI Flags
 

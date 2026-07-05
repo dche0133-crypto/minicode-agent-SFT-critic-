@@ -1,0 +1,17 @@
+{
+  "id": "log_level_parser",
+  "type": "bugfix",
+  "difficulty": "medium",
+  "check_command": "python -m pytest -q",
+  "max_steps": 16,
+  "max_patch_lines": 80,
+  "expected_files": [
+    "log_level_parser.py"
+  ],
+  "tags": [
+    "python",
+    "parsing",
+    "validation",
+    "medium"
+  ]
+}

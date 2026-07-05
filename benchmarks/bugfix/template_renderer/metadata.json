@@ -1,0 +1,17 @@
+{
+  "id": "template_renderer",
+  "type": "bugfix",
+  "difficulty": "hard",
+  "check_command": "python -m pytest -q",
+  "max_steps": 20,
+  "max_patch_lines": 120,
+  "expected_files": [
+    "template_renderer.py"
+  ],
+  "tags": [
+    "python",
+    "parsing",
+    "templating",
+    "hard"
+  ]
+}

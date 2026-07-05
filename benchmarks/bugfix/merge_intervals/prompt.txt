@@ -1,0 +1,1 @@
+Fix merge_intervals.py. Merge overlapping or touching inclusive intervals and support unsorted input without mutating it.

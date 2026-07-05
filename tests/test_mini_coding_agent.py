@@ -100,6 +100,52 @@ def test_agent_accepts_xml_write_file_tool(tmp_path):
     assert (tmp_path / "hello.py").read_text(encoding="utf-8") == 'print("hi")\n'
 
 
+def test_write_file_strips_outer_markdown_code_fence(tmp_path):
+    agent = build_agent(tmp_path, [])
+
+    result = agent.run_tool(
+        "write_file",
+        {"path": "hello.py", "content": "```python\nprint('hi')\n```"},
+    )
+
+    assert result.startswith("wrote hello.py")
+    assert (tmp_path / "hello.py").read_text(encoding="utf-8") == "print('hi')"
+
+
+def test_temporary_tool_whitelist_blocks_unapproved_tool(tmp_path):
+    agent = build_agent(
+        tmp_path,
+        ['<tool>{"name":"write_file","args":{"path":"blocked.py","content":"x"}}</tool>'],
+    )
+
+    result = agent.ask_with_allowed_tools(
+        "Run only tests.",
+        ["run_tests"],
+        max_steps=1,
+    )
+
+    assert "step limit" in result
+    tool_event = next(item for item in agent.session["history"] if item["role"] == "tool")
+    assert "blocked by the current retry policy" in tool_event["content"]
+    assert not (tmp_path / "blocked.py").exists()
+    assert agent.active_allowed_tools is None
+
+
+def test_required_tool_retries_after_a_prose_response(tmp_path):
+    agent = build_agent(
+        tmp_path,
+        [
+            "<final>I would run tests next.</final>",
+            '<tool>{"name":"read_file","args":{"path":"hello.txt","start":1,"end":1}}</tool>',
+        ],
+    )
+    (tmp_path / "hello.txt").write_text("hello\n", encoding="utf-8")
+
+    agent.ask_with_allowed_tools("Inspect hello.txt.", ["read_file"], max_steps=1, require_tool=True)
+
+    assert any(item.get("role") == "tool" and item.get("name") == "read_file" for item in agent.session["history"])
+
+
 def test_retries_do_not_consume_the_whole_budget(tmp_path):
     agent = build_agent(
         tmp_path,

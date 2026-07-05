@@ -339,6 +339,9 @@ class MiniAgent:
         self.depth = depth
         self.max_depth = max_depth
         self.read_only = read_only
+        # Benchmark retries can temporarily narrow the tools the model may use.
+        # Normal interactive sessions leave this unset and retain every tool.
+        self.active_allowed_tools = None
         self.session = session or {
             "id": datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6],
             "title": "Untitled session",
@@ -683,6 +686,61 @@ class MiniAgent:
         self.record({"role": "assistant", "content": final, "created_at": now()})
         return final
 
+    def ask_with_allowed_tools(
+        self,
+        user_message,
+        allowed_tools,
+        max_steps=None,
+        require_tool=False,
+        require_edit=False,
+        required_tools=None,
+    ):
+        """Run one bounded turn with a temporary tool-policy whitelist."""
+        previous_tools = self.active_allowed_tools
+        previous_max_steps = self.max_steps
+        self.active_allowed_tools = {str(name) for name in allowed_tools}
+        if max_steps is not None:
+            self.max_steps = max(1, min(previous_max_steps, int(max_steps)))
+        try:
+            history_start = len(self.session["history"])
+            required_tools = {str(name) for name in (required_tools or [])}
+            request = user_message
+            answer = ""
+            for _ in range(2):
+                answer = self.ask(request)
+                used_tools = {
+                    item.get("name")
+                    for item in self.session["history"][history_start:]
+                    if item.get("role") == "tool"
+                }
+                missing = []
+                if require_tool and not used_tools:
+                    missing.append("at least one allowed tool call")
+                if require_edit and not used_tools.intersection({"write_file", "patch_file", "apply_patch"}):
+                    missing.append("one code-edit tool call")
+                missing_tools = sorted(required_tools - used_tools)
+                if missing_tools:
+                    missing.append("required tools: " + ", ".join(missing_tools))
+                if not missing:
+                    break
+                request = "\n".join(
+                    [
+                        user_message,
+                        "",
+                        "Retry phase protocol violation: your previous response did not satisfy the phase requirements.",
+                        "Missing: " + "; ".join(missing) + ".",
+                        "Do not answer with prose or a Markdown code block. Use the allowed tools now.",
+                    ]
+                )
+                # A follow-up for named requirements may use only the still-missing tools.
+                # This prevents a second identical read/diff from satisfying a different requirement.
+                if missing_tools:
+                    self.active_allowed_tools = set(missing_tools)
+            return answer
+        finally:
+            self.active_allowed_tools = previous_tools
+            self.max_steps = previous_max_steps
+
     #############################################################
     #### 3) Structured Tools, Validation, And Permissions #######
     #############################################################
@@ -690,6 +748,9 @@ class MiniAgent:
         tool = self.tools.get(name)
         if tool is None:
             return f"error: unknown tool '{name}'"
+        if self.active_allowed_tools is not None and name not in self.active_allowed_tools:
+            allowed = ", ".join(sorted(self.active_allowed_tools)) or "(none)"
+            return f"error: tool '{name}' is blocked by the current retry policy; allowed tools: {allowed}"
         try:
             self.validate_tool(name, args)
         except Exception as exc:
@@ -1393,10 +1454,16 @@ class MiniAgent:
 
     def tool_write_file(self, args):
         path = self.path(args["path"])
-        content = str(args["content"])
+        content = self.strip_markdown_code_fence(str(args["content"]))
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         return f"wrote {path.relative_to(self.root)} ({len(content)} chars)"
+
+    @staticmethod
+    def strip_markdown_code_fence(content):
+        """Accept a model's fenced code answer without writing the fence itself."""
+        match = re.match(r"^\s*```[^\r\n]*\r?\n(?P<body>.*?)(?:\r?\n)?```\s*$", content, re.S)
+        return match.group("body") if match else content
 
     def tool_patch_file(self, args):
         path = self.path(args["path"])

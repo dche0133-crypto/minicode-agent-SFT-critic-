@@ -21,8 +21,10 @@ dist/
 htmlcov/
 
 # Temporary files
-.mini-coding-agent
+.mini-coding-agent/
 .env
+.env.*
+!.env.example
 *.tmp
 *.temp
 *.swp
@@ -34,7 +36,45 @@ tmp/
 benchmark_results/
 benchmark_runs/
 trajectories/
-datasets/
+qwen2.5-coder-critic-lora/
+qwen2.5-coder-critic-lora.zip
+resume_extracted.txt
+scratch_note.txt
+
+# Private notes / resume and interview drafts
+MINICODE_INTERVIEW_TALK.md
+PROJECT_EXPERIENCE.md
+PROJECT_EXPERIENCE_ALGORITHM.md
+
+# Generated datasets: keep only curated SFT artifacts.
+datasets/*
+!datasets/.gitkeep
+!datasets/critic_sft_v2_retry_repeat3_clean.jsonl
+!datasets/critic_sft_v2_retry_repeat3_clean_check.jsonl
+cloud/critic_sft.jsonl
+
+# Model weights and training artifacts
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.ckpt
+*.gguf
+*.onnx
+adapter_model.safetensors
+training_args.bin
+checkpoint-*/
+
+# Archives and large exports
+*.zip
+*.tar
+*.tar.gz
+*.7z
+*.rar
+
+# Local notebooks/checkpoints
+.ipynb_checkpoints/
 
 # OS files
 .DS_Store
+Thumbs.db

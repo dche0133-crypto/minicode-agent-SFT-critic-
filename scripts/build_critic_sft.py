@@ -1,24 +1,37 @@
 import argparse
 import json
+import sys
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from scripts.critic_policy import FAILURE_TYPES, build_assessment
+
 INSTRUCTION = (
     "You are a coding-agent critic. Given a task, agent trajectory, test output, "
-    "and diff, diagnose the failure and suggest the next action. Return only JSON."
+    "and diff, return JSON with separate diagnosis and decision objects."
 )
 
+LABEL_SCHEMA_VERSION = "critic_diagnosis_decision.v2"
 
-FAILURE_TYPES = [
-    "no_test_run",
-    "wrong_file",
-    "unrelated_edit",
-    "repeated_tool_call",
-    "early_stop_after_test_failure",
-    "hidden_test_failed",
-    "patch_too_large",
-]
+DEFAULT_QUALITY_FILTER = {
+    "min_steps": 1,
+    "min_quality_score": 0.75,
+    "min_confidence": 0.3,
+    "max_input_chars": 12000,
+    "require_test_signal": True,
+    "require_diff_for_edit_decisions": True,
+    "exclude_failure_types": [],
+}
+
+EDIT_DECISION_ACTIONS = {
+    "repair_syntax",
+    "minimize_patch",
+    "rollback_unrelated_edit",
+}
+
 
 TARGETS = [
     ("bubble_sort.py", "sorting", "comparison operator sorts descending instead of ascending"),
@@ -107,6 +120,19 @@ SUGGESTION_STYLES = {
         "Minimize the diff to the failing behavior only.",
         "Avoid rewriting the whole file for a small bugfix.",
     ],
+    "test_failure": [
+        "Inspect the failing assertion and the latest diff before choosing another edit.",
+        "Read the target implementation and use the test output to make a minimal fix.",
+        "Gather more evidence from the failing test before changing unrelated code.",
+    ],
+    "syntax_error": [
+        "Remove invalid syntax, then rerun the smallest relevant test command.",
+        "Inspect the target file for Markdown fences or indentation mistakes before editing again.",
+    ],
+    "tool_protocol_error": [
+        "Issue one valid structured tool call instead of returning protocol text as an answer.",
+        "Retry with the declared XML or JSON tool-call format and gather fresh evidence.",
+    ],
 }
 
 
@@ -149,29 +175,16 @@ def latest_diff(training):
 
 
 def output_label(analysis, metadata=None):
-    metadata = metadata or {}
-    failure_type = analysis.get("failure_type", "test_failure")
-    expected = metadata.get("expected_files", [])
-    target = expected[0] if expected else ""
-    mapping = {
-        "none": ("final", target),
-        "no_test_run": ("run_tests", ""),
-        "wrong_file": ("read_file", target),
-        "unrelated_edit": ("rollback", target),
-        "repeated_tool_call": ("choose_different_tool", target),
-        "early_stop_after_test_failure": ("edit_file", target),
-        "hidden_test_failed": ("edit_file", target),
-        "patch_too_large": ("minimize_patch", target),
-        "test_failure": ("inspect_failure", target),
-    }
-    next_action, mapped_target = mapping.get(failure_type, ("inspect_failure", target))
-    return {
-        "failure_type": failure_type,
-        "reason": analysis.get("reason", ""),
-        "next_action": next_action,
-        "target_file": mapped_target,
-        "suggestion": analysis.get("suggestion", ""),
-    }
+    label = build_assessment(
+        analysis.get("failure_type", "test_failure"),
+        analysis.get("reason", ""),
+        evidence=analysis.get("evidence", ""),
+        suggestion=analysis.get("suggestion", ""),
+        metadata=metadata,
+        confidence=analysis.get("confidence"),
+    )
+    label["schema"] = LABEL_SCHEMA_VERSION
+    return label
 
 
 def sample_input(task, training, public_result=None, hidden_result=None):
@@ -197,11 +210,111 @@ def metadata_for_task(benchmark_root, task_id):
     return {}
 
 
-def rows_from_report(report_path, include_success=False):
+def report_results(report):
+    if "results" in report:
+        return report.get("results", [])
+    results = []
+    for run in report.get("runs", []):
+        for result in run.get("results", []):
+            item = dict(result)
+            item["repeat_index"] = run.get("index")
+            results.append(item)
+    return results
+
+
+def has_test_signal(training, public_result, hidden_result):
+    public_text = str(public_result.get("stdout", "")) + str(public_result.get("stderr", ""))
+    hidden_text = str(hidden_result.get("stdout", "")) + str(hidden_result.get("stderr", ""))
+    if public_text.strip() or hidden_text.strip():
+        return True
+    for step in training.get("steps", []):
+        if step.get("action") == "run_tests" or "pytest" in str(step.get("observation", "")).lower():
+            return True
+    return False
+
+
+def quality_assessment(row_input, training, output, public_result, hidden_result, quality_filter=None):
+    quality_filter = quality_filter or DEFAULT_QUALITY_FILTER
+    steps = training.get("steps", [])
+    failure_type = output.get("diagnosis", {}).get("failure_type", output.get("failure_type", "unknown"))
+    decision = output.get("decision", {})
+    confidence = float(output.get("diagnosis", {}).get("confidence", output.get("confidence", 0)))
+    diff = latest_diff(training)
+    signals = {
+        "steps": len(steps),
+        "input_chars": len(row_input),
+        "has_test_signal": has_test_signal(training, public_result, hidden_result),
+        "has_diff": bool(diff.strip()),
+        "confidence": confidence,
+        "failure_type": failure_type,
+        "next_action": decision.get("next_action", ""),
+    }
+    reasons = []
+    score = 1.0
+    if failure_type in set(quality_filter.get("exclude_failure_types", [])):
+        reasons.append("excluded_failure_type")
+        score -= 1.0
+    if len(steps) < int(quality_filter.get("min_steps", 1)):
+        reasons.append("too_few_steps")
+        score -= 0.35
+    if len(row_input) > int(quality_filter.get("max_input_chars", 12000)):
+        reasons.append("input_too_long")
+        score -= 0.2
+    if quality_filter.get("require_test_signal", True) and not signals["has_test_signal"]:
+        reasons.append("missing_test_signal")
+        score -= 0.35
+    if confidence < float(quality_filter.get("min_confidence", 0.3)):
+        reasons.append("low_confidence")
+        score -= 0.3
+    requires_diff = (
+        quality_filter.get("require_diff_for_edit_decisions", True)
+        and decision.get("next_action") in EDIT_DECISION_ACTIONS
+    )
+    if requires_diff and not signals["has_diff"]:
+        reasons.append("missing_diff_for_edit_decision")
+        score -= 0.35
+    score = round(max(0.0, min(1.0, score)), 3)
+    keep = score >= float(quality_filter.get("min_quality_score", 0.6))
+    return {
+        "keep": keep,
+        "score": score,
+        "reasons": reasons or ["ok"],
+        "signals": signals,
+    }
+
+
+def build_row(result, training, metadata, quality_filter=None):
+    public_result = result.get("public_result", {})
+    hidden_result = result.get("hidden_result", {})
+    analysis = result.get("failure_analysis", {})
+    row_input = sample_input(
+        training.get("task") or result.get("final_answer", ""),
+        training,
+        public_result,
+        hidden_result,
+    )
+    output = output_label(analysis, metadata)
+    quality = quality_assessment(row_input, training, output, public_result, hidden_result, quality_filter)
+    row = {
+        "id": f"{result.get('task_id')}_{result.get('session_id')}",
+        "source": "benchmark",
+        "task_id": result.get("task_id"),
+        "instruction": INSTRUCTION,
+        "label_schema": LABEL_SCHEMA_VERSION,
+        "input": row_input,
+        "output": output,
+        "quality": quality,
+    }
+    if result.get("repeat_index") is not None:
+        row["repeat_index"] = result.get("repeat_index")
+    return row
+
+
+def rows_from_report(report_path, include_success=False, quality_filter=None, apply_quality_filter=True):
     report = read_json(report_path)
     benchmark_root = report.get("benchmark_root", ROOT / "benchmarks")
     rows = []
-    for result in report.get("results", []):
+    for result in report_results(report):
         analysis = result.get("failure_analysis", {})
         if analysis.get("failure_type") == "none" and not include_success:
             continue
@@ -214,21 +327,9 @@ def rows_from_report(report_path, include_success=False):
             continue
         training = read_json(training_path)
         metadata = metadata_for_task(benchmark_root, result.get("task_id"))
-        rows.append(
-            {
-                "id": f"{result.get('task_id')}_{result.get('session_id')}",
-                "source": "benchmark",
-                "task_id": result.get("task_id"),
-                "instruction": INSTRUCTION,
-                "input": sample_input(
-                    training.get("task") or result.get("final_answer", ""),
-                    training,
-                    result.get("public_result", {}),
-                    result.get("hidden_result", {}),
-                ),
-                "output": output_label(analysis, metadata),
-            }
-        )
+        row = build_row(result, training, metadata, quality_filter)
+        if not apply_quality_filter or row["quality"]["keep"]:
+            rows.append(row)
     return rows
 
 
@@ -344,16 +445,60 @@ def synthetic_case(failure_type, index):
                 "suggestion": suggestion,
             },
         },
+        "test_failure": {
+            "steps": [
+                {"step": 1, "action": "read_file", "args": {"path": target}, "observation": snippet, "diff": "", "success": None},
+                {"step": 2, "action": "run_tests", "args": {"command": command}, "observation": "exit_code: 1\n" + base_test, "diff": target_diff, "success": False},
+            ],
+            "analysis": {
+                "failure_type": "test_failure",
+                "reason": f"Tests for {target} failed without a more specific trajectory rule match.",
+                "suggestion": suggestion,
+            },
+        },
+        "syntax_error": {
+            "steps": [
+                {"step": 1, "action": "write_file", "args": {"path": target, "content": "```python\\n" + snippet}, "observation": f"wrote {target}", "diff": target_diff, "success": None},
+                {"step": 2, "action": "run_tests", "args": {"command": command}, "observation": "exit_code: 1\\nSyntaxError: invalid syntax", "diff": target_diff, "success": False},
+            ],
+            "analysis": {
+                "failure_type": "syntax_error",
+                "reason": f"The generated edit made {target} syntactically invalid.",
+                "suggestion": suggestion,
+            },
+        },
+        "tool_protocol_error": {
+            "steps": [
+                {"step": 1, "action": "run_tests", "args": {"command": command}, "observation": "exit_code: 1\\n" + base_test, "diff": "", "success": False},
+                {"step": 2, "action": "final", "args": {}, "observation": "[tool:write_file] " + target, "diff": "", "success": False},
+            ],
+            "analysis": {
+                "failure_type": "tool_protocol_error",
+                "reason": "The model emitted tool protocol text instead of a valid executable tool call.",
+                "suggestion": suggestion,
+            },
+        },
     }
     case = cases[failure_type]
     training = {"task": task, "steps": case["steps"]}
+    row_input = sample_input(task, training, {"stdout": base_test, "stderr": ""}, {"stdout": hidden_test, "stderr": ""})
+    output = output_label(case["analysis"], {"expected_files": [target]})
+    quality = quality_assessment(
+        row_input,
+        training,
+        output,
+        {"stdout": base_test, "stderr": ""},
+        {"stdout": hidden_test, "stderr": ""},
+    )
     return {
         "id": f"synthetic_{failure_type}_{index:04d}",
         "source": "synthetic_template",
         "task_id": f"synthetic_{failure_type}",
         "instruction": INSTRUCTION,
-        "input": sample_input(task, training, {"stdout": base_test, "stderr": ""}, {"stdout": hidden_test, "stderr": ""}),
-        "output": output_label(case["analysis"], {"expected_files": [target]}),
+        "label_schema": LABEL_SCHEMA_VERSION,
+        "input": row_input,
+        "output": output,
+        "quality": quality,
     }
 
 
@@ -383,23 +528,54 @@ def dedupe_rows(rows):
 
 def dataset_stats(rows):
     failure_counts = {}
+    decision_counts = {}
+    quality_reasons = {}
     sources = {}
     unique_inputs = set()
     unique_pairs = set()
+    quality_scores = []
     for row in rows:
-        failure_type = row.get("output", {}).get("failure_type", "unknown")
+        output = row.get("output", {})
+        failure_type = output.get("diagnosis", {}).get("failure_type", output.get("failure_type", "unknown"))
         failure_counts[failure_type] = failure_counts.get(failure_type, 0) + 1
+        next_action = output.get("decision", {}).get("next_action", output.get("next_action", "unknown"))
+        decision_counts[next_action] = decision_counts.get(next_action, 0) + 1
         source = row.get("source", "unknown")
         sources[source] = sources.get(source, 0) + 1
         unique_inputs.add(row.get("input", ""))
         unique_pairs.add((row.get("input", ""), json.dumps(row.get("output", {}), ensure_ascii=False, sort_keys=True)))
+        quality = row.get("quality", {})
+        quality_scores.append(float(quality.get("score", 0)))
+        for reason in quality.get("reasons", []):
+            quality_reasons[reason] = quality_reasons.get(reason, 0) + 1
     return {
         "rows": len(rows),
         "unique_inputs": len(unique_inputs),
         "unique_input_output_pairs": len(unique_pairs),
         "sources": sources,
         "failure_types": failure_counts,
+        "decision_actions": decision_counts,
+        "avg_quality_score": round(sum(quality_scores) / len(quality_scores), 3) if quality_scores else 0,
+        "quality_reasons": quality_reasons,
+        "label_schema": LABEL_SCHEMA_VERSION,
     }
+
+
+def balance_rows(rows, max_per_failure_type=None):
+    if not max_per_failure_type:
+        return rows
+    counts = {}
+    balanced = []
+    for row in rows:
+        failure_type = row.get("output", {}).get("diagnosis", {}).get(
+            "failure_type",
+            row.get("output", {}).get("failure_type", "unknown"),
+        )
+        if counts.get(failure_type, 0) >= max_per_failure_type:
+            continue
+        counts[failure_type] = counts.get(failure_type, 0) + 1
+        balanced.append(row)
+    return balanced
 
 
 def report_paths(path):
@@ -415,6 +591,11 @@ def build_arg_parser():
     parser.add_argument("--out", default="datasets/critic_sft.jsonl", help="Output JSONL path.")
     parser.add_argument("--include-success", action="store_true", help="Include successful benchmark rows.")
     parser.add_argument("--synthetic-per-type", type=int, default=0, help="Number of synthetic rows per failure type.")
+    parser.add_argument("--no-quality-filter", action="store_true", help="Keep rows even when quality checks fail.")
+    parser.add_argument("--min-quality-score", type=float, default=0.75, help="Minimum quality score for benchmark rows.")
+    parser.add_argument("--min-confidence", type=float, default=0.3, help="Minimum label confidence for benchmark rows.")
+    parser.add_argument("--max-input-chars", type=int, default=12000, help="Drop benchmark rows whose input prompt is too long.")
+    parser.add_argument("--max-per-failure-type", type=int, default=0, help="Optional cap per failure type after filtering and dedupe.")
     parser.add_argument("--no-dedupe", action="store_true", help="Disable exact input/output deduplication.")
     return parser
 
@@ -425,14 +606,29 @@ def main(argv=None):
     if not reports.is_absolute():
         reports = ROOT / reports
     rows = []
+    quality_filter = {
+        **DEFAULT_QUALITY_FILTER,
+        "min_quality_score": args.min_quality_score,
+        "min_confidence": args.min_confidence,
+        "max_input_chars": args.max_input_chars,
+    }
     if reports.exists():
         for report in report_paths(reports):
-            rows.extend(rows_from_report(report, include_success=args.include_success))
+            rows.extend(
+                rows_from_report(
+                    report,
+                    include_success=args.include_success,
+                    quality_filter=quality_filter,
+                    apply_quality_filter=not args.no_quality_filter,
+                )
+            )
     if args.synthetic_per_type:
         rows.extend(synthetic_rows(args.synthetic_per_type))
     before = len(rows)
     if not args.no_dedupe:
         rows = dedupe_rows(rows)
+    before_balance = len(rows)
+    rows = balance_rows(rows, args.max_per_failure_type or None)
 
     out = Path(args.out)
     if not out.is_absolute():
@@ -441,7 +637,9 @@ def main(argv=None):
     stats = dataset_stats(rows)
     print(json.dumps(stats, indent=2, ensure_ascii=False))
     if before != len(rows):
-        print(f"deduped {before - len(rows)} duplicate rows")
+        print(f"removed {before - len(rows)} rows by dedupe/balancing")
+    if before_balance != len(rows):
+        print(f"balanced away {before_balance - len(rows)} rows")
     print(f"wrote {len(rows)} rows to {out}")
     return 0
 

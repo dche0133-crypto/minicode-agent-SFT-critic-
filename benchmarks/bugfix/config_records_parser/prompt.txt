@@ -1,0 +1,3 @@
+Fix `config_records.py` so `parse_records(text)` follows its documented contract.
+
+Keep the public function signature unchanged. Run the tests after making a minimal fix.

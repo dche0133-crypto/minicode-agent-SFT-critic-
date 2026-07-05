@@ -1,0 +1,17 @@
+{
+  "id": "path_validator",
+  "type": "bugfix",
+  "difficulty": "medium",
+  "check_command": "python -m pytest -q",
+  "max_steps": 16,
+  "max_patch_lines": 80,
+  "expected_files": [
+    "path_validator.py"
+  ],
+  "tags": [
+    "python",
+    "security",
+    "paths",
+    "medium"
+  ]
+}

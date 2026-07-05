@@ -1,0 +1,17 @@
+{
+  "id": "csv_row_parser",
+  "type": "bugfix",
+  "difficulty": "medium",
+  "check_command": "python -m pytest -q",
+  "max_steps": 16,
+  "max_patch_lines": 80,
+  "expected_files": [
+    "csv_row_parser.py"
+  ],
+  "tags": [
+    "python",
+    "csv",
+    "parsing",
+    "medium"
+  ]
+}
