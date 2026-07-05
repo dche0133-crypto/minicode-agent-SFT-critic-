@@ -1,370 +1,339 @@
-&nbsp;
-# Mini-Coding-Agent
+# MiniCode-Agent：Coding Agent 评测、失败归因与 Critic 训练框架
 
-This folder contains a small standalone coding agent:
+MiniCode-Agent 是一个面向代码修复任务的轻量级 Coding Agent 原型。项目重点不是只做一个能调用工具的 Agent，而是围绕 Agent 的执行过程建立一套可评测、可复盘、可诊断、可训练的闭环。
 
-- code: `mini_coding_agent.py`
-- CLI: `mini-coding-agent`
+```text
+Agent 执行
+-> Benchmark 评测
+-> Trajectory 采集
+-> Failure Analysis 失败归因
+-> Critic Policy / Retry
+-> Critic SFT 数据构造
+-> LoRA Critic 离线验证
+```
 
-It is a minimal local agent loop with:
+## 项目亮点
 
-- workspace snapshot collection
-- stable prompt plus turn state
-- structured tools
-- approval handling for risky tools
-- transcript and memory persistence
-- bounded delegation
-- dedicated test, diff, rollback, and trajectory-export workflows
-- fixed test-fix and critic/reflection commands for evaluation data collection
+- 实现 ReAct 风格 Agent 循环：模型输出工具调用，工具结果作为 observation 回传给模型。
+- 支持文件读取、代码搜索、补丁修改、测试运行、Git diff、rollback 等代码修复工具。
+- 构建 20 个 Python bugfix benchmark，包含 easy / medium / hard 难度、public tests 和 hidden tests。
+- 自动记录 session、raw trajectory 和 training trajectory，便于复盘与训练数据构造。
+- 实现规则化 Failure Analysis，识别 `no_test_run`、`test_failure`、`hidden_test_failed`、`syntax_error`、`repeated_tool_call` 等失败类型。
+- 实现 Critic-guided Retry，将失败后的重试拆成 Diagnose、Edit、Verify、Accept/Rollback。
+- 引入候选补丁质量评价，避免 Retry 越修越坏。
+- 支持 repeat 多次评测，统计均值、标准差、成本指标和 patch 质量指标。
+- 构造 Critic SFT 数据，并在云端完成过 QLoRA Critic 离线验证。
 
-The default model backend is DeepSeek, with Ollama still available as an optional local provider.
+## 目录结构
 
-<a href="https://magazine.sebastianraschka.com/p/components-of-a-coding-agent">
-  <img src="https://substack-post-media.s3.amazonaws.com/public/images/49b97718-57f4-4977-99c8-8ad5c4d32af3_1548x862.png" width="500px">
-</a>
+```text
+mini_coding_agent.py          Agent 主程序
+scripts/
+  run_benchmark.py            Benchmark 运行器
+  failure_analysis.py         失败归因
+  critic_policy.py            Critic 决策标签与工具约束
+  scoring.py                  综合评分
+  build_critic_sft.py         Critic SFT 数据构造
+  compare_benchmark_reports.py 实验报告对比
+benchmarks/bugfix/            20 个代码修复任务
+configs/                      Retry 策略配置
+cloud/                        云端 LoRA 训练与推理脚本
+datasets/                     精简后的 Critic SFT 数据
+tests/                        单元测试
+```
 
-<br>
+## 安装环境
 
-**[The detailed tutorial: Components of a Coding Agent](https://magazine.sebastianraschka.com/p/components-of-a-coding-agent)**
+需要 Python 3.10+。
 
+推荐先创建虚拟环境，然后安装项目：
 
-&nbsp;
-## Six Core Components
+```powershell
+pip install -e .
+```
 
-<a href="https://magazine.sebastianraschka.com/p/components-of-a-coding-agent">
-  <img alt="Six core components of a coding agent" src="https://sebastianraschka.com/images/github/mini-coding-agent/six-components.webp" width="500px">
-</a>
+如果只想直接运行，也可以使用：
 
-This coding harness is organized around six practical building blocks:
+```powershell
+python mini_coding_agent.py --help
+```
 
-1. **Live repo context**  
-   The agent collects stable workspace facts upfront, such as repo layout, instructions, and git state.
-2. **Prompt shape and cache reuse**  
-   A stable prompt prefix, which is separate from the changing request, transcript, and memory so repeated model calls can reuse the static parts efficiently.
-3. **Structured tools, validation, and permissions**  
-   The model works through named tools with checked inputs, workspace path validation, and approval gates instead of free-form arbitrary actions.
-4. **Context reduction and output management**  
-   Long outputs are clipped, repeated reads are deduplicated, and older transcript entries are compressed to keep prompt size under control.
-5. **Transcripts, memory, and resumption**  
-   The runtime keeps both a full durable transcript and a smaller working memory so sessions can be resumed while preserving important state via working memory.
-6. **Delegation and bounded subagents**  
-   Scoped subtasks can be delegated to helper agents that inherit enough context to help (but operate within limits).
+## 模型后端
 
-&nbsp;
-## Requirements
+项目支持两种模型后端：
 
-You need:
+- `deepseek`：通过 API 调用，需要 `.env` 中配置 `DEEPSEEK_API_KEY`
+- `ollama`：本地模型推理，例如 `qwen2.5-coder:7b`
 
-- Python 3.10+
-- A DeepSeek API key in `DEEPSEEK_API_KEY`
-
-Optional:
-
-- `uv` for environment management and the `mini-coding-agent` CLI entry point
-- Ollama installed with a local model if you want to use `--provider ollama`
-
-This project has no Python runtime dependency beyond the standard library, so you can run it directly with `python mini_coding_agent.py` if you do not want to use `uv`.
-
-&nbsp;
-## Configure DeepSeek
-
-Create a `.env` file in the project root:
+`.env` 示例：
 
 ```text
 DEEPSEEK_API_KEY=your-api-key
 ```
 
-Do not commit `.env` to version control.
+注意：不要把 `.env` 上传到 GitHub。
 
-You can also set the key directly in your shell:
+## 运行 Agent
 
-```bash
-set DEEPSEEK_API_KEY=your-api-key
-```
-
-PowerShell:
+使用默认 DeepSeek 后端：
 
 ```powershell
-$env:DEEPSEEK_API_KEY="your-api-key"
-```
-
-The default model is `deepseek-v4-pro`.
-
-&nbsp;
-## Optional: Install Ollama
-
-Install Ollama on your machine so the `ollama` command is available in your shell.
-
-Official installation link: [ollama.com/download](https://ollama.com/download)
-
-Then verify:
-
-```bash
-ollama --help
-```
-
-Start the server:
-
-```bash
-ollama serve
-```
-
-In another terminal, pull a model. Example:
-
-```bash
-ollama pull qwen3.5:4b
-```
-
-Qwen 3.5 model library:
-
-- [ollama.com/library/qwen3.5](https://ollama.com/library/qwen3.5)
-
-When using `--provider ollama`, you can choose a local model such as `qwen3.5:4b`. If you have sufficient memory, it is worth trying a larger model such as `qwen3.5:9b` or another larger Qwen 3.5 variant. In Ollama mode, the agent sends prompts to Ollama's `/api/generate` endpoint.
-
-&nbsp;
-## Project Setup
-
-Clone the repo or your fork and change into it:
-
-```bash
-git clone https://github.com/rasbt/mini-coding-agent.git
-cd mini-coding-agent
-```
-
-If you forked it first, use your fork URL instead:
-
-```bash
-git clone https://github.com/<your-github-user>/mini-coding-agent.git
-cd mini-coding-agent
-```
-
-
-
-&nbsp;
-## Basic Usage
-
-Start the agent:
-
-```bash
-cd mini-coding-agent
-uv run mini-coding-agent
-```
-
-Without `uv`, run the script directly:
-
-```bash
-cd mini-coding-agent
 python mini_coding_agent.py
 ```
 
-By default it uses:
+使用本地 Ollama：
 
-- provider: `deepseek`
-- model: `deepseek-v4-pro`
-- approval: `ask`
-
-For a concrete usage example, see [EXAMPLE.md](EXAMPLE.md).
-
-&nbsp;
-## Approval Modes
-
-Risky tools such as shell commands and file writes are gated by approval.
-
-- `--approval ask`
-  prompts before risky actions (default and recommended)
-- `--approval auto`
-  allows risky actions automatically, including arbitrary command execution and file writes by the model; use only with trusted prompts and trusted repositories
-- `--approval never`
-  denies risky actions
-
-Example:
-
-```bash
-uv run mini-coding-agent --approval auto
+```powershell
+python mini_coding_agent.py --provider ollama --model qwen2.5-coder:7b
 ```
 
-
-
-&nbsp;
-## Resume Sessions
-
-The agent saves sessions under the target workspace root in:
+常用参数：
 
 ```text
-.mini-coding-agent/sessions/
+--provider       模型后端：deepseek 或 ollama
+--model          模型名称
+--cwd            Agent 工作目录
+--approval       风险工具审批模式：ask / auto / never
+--max-steps      单次任务最大工具轮数
+--temperature    采样温度
 ```
 
-Resume the latest session:
+## 交互命令
 
-```bash
-uv run mini-coding-agent --resume latest
+进入 Agent 后，可以使用以下 slash commands：
+
+```text
+/help                         查看命令
+/tools                        查看可用工具
+/history                      查看最近历史
+/sessions                     查看保存的会话
+/resume latest                恢复最近会话
+/critic                       基于最近测试结果生成诊断
+/test-fix [command]           固定测试修复流程
+/export-trajectory            导出普通轨迹
+/export-training-trajectory   导出训练轨迹
+/memory                       查看压缩记忆
+/exit                         退出
 ```
 
+## Benchmark 评测
 
-Resume a specific session:
+不调用模型的 smoke test：
 
-```bash
-uv run mini-coding-agent --resume 20260401-144025-2dd0aa
+```powershell
+python scripts/run_benchmark.py --fake-agent-success --task bubble_sort_order
 ```
 
+使用本地 Ollama 跑一个任务：
 
-&nbsp;
-## Interactive Commands
-
-Inside the REPL, slash commands are handled directly by the agent instead of
-being sent to the model as a normal task.
-
-- `/help`
-  shows the list of available interactive commands
-- `/tools`
-  prints the available tools and whether each one requires approval
-- `/history`
-  prints recent recorded user, tool, and assistant events
-- `/last`
-  prints the most recent recorded event
-- `/sessions`
-  lists saved sessions for the current workspace
-- `/resume <id>`
-  resumes a saved session by id; use `/resume latest` for the newest session
-- `/compact`
-  summarizes the current history into memory notes and clears the detailed history
-- `/critic`
-  prints a JSON diagnosis from the latest `run_tests` result
-- `/test-fix [command]`
-  runs a fixed test-fix workflow using `run_tests`, file inspection, patching, `git_diff`, and rerun
-- `/export-trajectory [path]`
-  exports the current session as trajectory JSON for evaluation or training data
-- `/export-training-trajectory [path]`
-  exports a normalized training trajectory with `step`, `thought`, `action`, `args`, `observation`, `diff`, and `success`
-- `/memory`
-  prints the distilled session memory, including the current task, tracked files, and notes
-- `/session`
-  prints the path to the current saved session JSON file
-- `/reset`
-  clears the current session history and distilled memory but keeps you in the REPL
-- `/exit`
-  exits the interactive session
-- `/quit`
-  exits the interactive session; alias for `/exit`
-
-&nbsp;
-## Benchmark Runner
-
-This fork includes a small benchmark harness for evaluating agent behavior on
-isolated coding tasks.
-
-Smoke-test the benchmark runner without calling a model:
-
-```bash
-python scripts/run_benchmark.py --fake-agent-success
+```powershell
+python scripts/run_benchmark.py --provider ollama --model qwen2.5-coder:7b --temperature 0 --task bubble_sort_order
 ```
 
-Run one benchmark task with the configured model provider:
+跑完整 20 个任务：
 
-```bash
-python scripts/run_benchmark.py --task bubble_sort_order
+```powershell
+python scripts/run_benchmark.py --provider ollama --model qwen2.5-coder:7b --temperature 0
 ```
 
-Each benchmark task lives under `benchmarks/` and contains:
+每个 benchmark task 包含：
 
-- `prompt.txt`
-- `repo/`
-- `public_tests/`
-- `hidden_tests/`
-- `metadata.json`
-
-Results are written to `benchmark_results/`, while copied task repos and their
-trajectory files are written to `benchmark_runs/run_<timestamp>/`. Reports
-include public/hidden test status, tool-call counts, final answer text, the raw
-trajectory path, and the normalized training trajectory path. Each result also includes a rule-based
-`failure_analysis` field with coarse failure types such as `no_test_run`,
-`wrong_file`, `unrelated_edit`, `repeated_tool_call`,
-`early_stop_after_test_failure`, `hidden_test_failed`, and `patch_too_large`.
-
-Re-analyze an existing benchmark report:
-
-```bash
-python scripts/analyze_failures.py benchmark_results/run_YYYYMMDD-HHMMSS.json
+```text
+prompt.txt       任务说明
+repo/            初始有 bug 的代码
+public_tests/    Agent 可以运行看到的测试
+hidden_tests/    最终评估泛化能力的测试
+metadata.json    难度、目标文件、标签等元数据
 ```
 
-Build Critic SFT data from benchmark reports:
+## Critic Retry
 
-```bash
-python scripts/build_critic_sft.py --reports benchmark_results --out datasets/critic_sft_from_benchmark.jsonl
+开启规则 Critic Retry：
+
+```powershell
+python scripts/run_benchmark.py `
+  --provider ollama `
+  --model qwen2.5-coder:7b `
+  --temperature 0 `
+  --critic-retries 1 `
+  --retry-policy configs/retry_policy.strict.json
 ```
 
-Generate synthetic Critic SFT data from templates:
+Retry 流程：
 
-```bash
-python scripts/build_critic_sft.py --reports missing_reports --synthetic-per-type 50 --out datasets/critic_sft_synthetic.jsonl
+```text
+Diagnose：先看测试失败和轨迹证据
+Edit：只允许使用受控编辑工具
+Verify：必须重新运行 public tests
+Accept/Rollback：测试有改善才接受，否则回滚
 ```
 
-The builder deduplicates exact input/output pairs by default and prints dataset
-statistics, including source counts and failure-type distribution.
+这样可以避免模型只输出解释文字、忘记运行测试，或者把代码越修越坏。
 
-Combine benchmark-derived and synthetic data:
+## Repeat 评测
 
-```bash
-python scripts/build_critic_sft.py --reports benchmark_results --include-success --synthetic-per-type 50 --out datasets/critic_sft.jsonl
+单次 benchmark 容易受模型波动影响，因此项目支持 repeat 多次运行：
+
+```powershell
+python scripts/run_benchmark.py `
+  --provider ollama `
+  --model qwen2.5-coder:7b `
+  --temperature 0 `
+  --repeat 5 `
+  --out benchmark_results/baseline_repeat5
+
+python scripts/run_benchmark.py `
+  --provider ollama `
+  --model qwen2.5-coder:7b `
+  --temperature 0 `
+  --critic-retries 1 `
+  --retry-policy configs/retry_policy.strict.json `
+  --repeat 5 `
+  --out benchmark_results/retry_repeat5
 ```
 
-Cloud LoRA training scripts live under `cloud/`. See `cloud/README.md` for the
-minimal upload files and commands.
+项目会统计：
 
-&nbsp;
-## Main CLI Flags
+- public pass rate
+- hidden pass rate
+- 综合分
+- 工具调用次数
+- 总耗时
+- patch 修改文件数
+- patch 修改行数
+- 多次运行标准差
 
-```bash
-uv run mini-coding-agent --help
+## 实验结果
+
+本地 Ollama `qwen2.5-coder:7b`、`temperature=0`、20 个任务、`repeat=5` 的结果：
+
+| 指标 | Baseline | Critic Retry | 变化 |
+| --- | ---: | ---: | ---: |
+| Public Pass Rate | 41.0% | 58.0% | +17.0 pp |
+| Hidden Pass Rate | 32.0% | 39.0% | +7.0 pp |
+| Avg Score | 37.83 | 55.21 | +17.38 |
+| Avg Tool Calls | 2.98 | 4.83 | +1.85 |
+| Avg Wall Time | 8.28s | 13.42s | +5.14s |
+| Avg Patch Lines | 7.38 | 8.62 | +1.24 |
+
+结论：规则 Critic Retry 能提升执行流程、public/hidden pass 和综合分，但代价是更多工具调用和更长耗时。Hard task 仍然困难，尤其是图算法、多文件和复杂语义任务。
+
+详细报告见：
+
+```text
+EXPERIMENT_REPORT_REPEAT5.md
+HARD_TASK_ANALYSIS.md
+ABLATION_REPORT.md
+TWO_DAY_PROJECT_SUMMARY.md
 ```
 
-Without `uv`:
+## 生成 Critic SFT 数据
 
-```bash
-python mini_coding_agent.py --help
+从 benchmark report 构造 Critic SFT 数据：
+
+```powershell
+python scripts/build_critic_sft.py `
+  --reports benchmark_results/retry_repeat3 `
+  --include-success `
+  --synthetic-per-type 10 `
+  --min-quality-score 0.9 `
+  --out datasets/critic_sft_v2_retry_repeat3_clean.jsonl
 ```
 
-CLI flags are passed before the agent starts. Use them to choose the workspace,
-model connection, resume behavior, approval mode, and generation limits.
+SFT 数据输入：
 
-Important flags:
+```text
+任务说明 + Agent trajectory + 测试报错 + git diff
+```
 
-- `--cwd`
-  sets the workspace directory the agent should inspect and modify; default: `.`
-- `--model`
-  selects the model name; default: `deepseek-v4-pro`
-- `--provider`
-  selects the model provider, either `deepseek` or `ollama`; default: `deepseek`
-- `--host`
-  points the agent at the provider API URL; DeepSeek default: `https://api.deepseek.com`; Ollama default: `http://127.0.0.1:11434`
-- `--api-key-env`
-  names the environment variable containing the DeepSeek API key; default: `DEEPSEEK_API_KEY`
-- `--env-file`
-  loads environment variables from a dotenv file before creating the model client; default: `.env`
-- `--timeout`
-  controls how long the client waits for a model response; default: `300` seconds
-- `--resume`
-  resumes a saved session by id or uses `latest`; default: start a new session
-- `--approval`
-  controls how risky tools are handled: `ask`, `auto`, or `never`; default: `ask`
-- `--max-steps`
-  limits how many model and tool turns are allowed for one user request; default: `8`
-- `--max-new-tokens`
-  caps the model output length for each step; default: `512`
-- `--temperature`
-  controls sampling randomness; default: `0.2`
-- `--top-p`
-  controls nucleus sampling for generation; default: `0.9`
+SFT 数据输出：
 
-&nbsp;
-## Example
+```json
+{
+  "diagnosis": {
+    "failure_type": "...",
+    "reason": "...",
+    "evidence": "...",
+    "confidence": 0.9
+  },
+  "decision": {
+    "next_action": "...",
+    "target_file": "...",
+    "allowed_tools": ["..."],
+    "risk_level": "...",
+    "abstain": false,
+    "confidence": 0.9
+  }
+}
+```
 
-See [EXAMPLE.md](EXAMPLE.md)
+当前保留的精简数据：
 
-&nbsp;
-## Notes & Tips
+```text
+datasets/critic_sft_v2_retry_repeat3_clean.jsonl
+```
 
-- The agent expects the model to emit either `<tool>...</tool>` or `<final>...</final>`.
-- Different Ollama models will follow those instructions with different reliability.
-- If the model does not follow the format well, use a stronger instruction-following model.
-- The agent is intentionally small and optimized for readability, not robustness.
+## LoRA Critic
+
+云端训练脚本在 `cloud/` 目录下：
+
+```text
+cloud/train_critic_lora.py
+cloud/eval_critic_lora.py
+cloud/eval_critic_compare.py
+cloud/requirements-train.txt
+```
+
+项目已经在 AutoDL RTX 4090 上用 `Qwen2.5-Coder-7B-Instruct` 做过 QLoRA Critic 离线验证。
+
+小规模验证结果：
+
+| 指标 | Base Model | LoRA Critic |
+| --- | ---: | ---: |
+| JSON 合法率 | 100% | 100% |
+| failure_type 字段匹配 | 0% | 90% |
+| next_action 字段匹配 | 0% | 90% |
+| target_file 字段匹配 | 15% | 95% |
+
+注意：LoRA Critic 目前只证明了离线结构化诊断能力，还没有完整接入在线 Retry，因此不能声称 LoRA 已经提升 Agent Pass@2。
+
+## 测试
+
+运行单元测试：
+
+```powershell
+python -m pytest -q
+```
+
+此前本地验证结果：
+
+```text
+73 passed, 1 skipped
+```
+
+## 项目边界
+
+已经完成：
+
+- Coding Agent 工具循环
+- Benchmark Harness
+- Trajectory 采集
+- Failure Analysis
+- Critic Policy
+- 受控 Retry
+- Patch 质量评价
+- Repeat 评测
+- 实验报告
+- Critic SFT 数据构造
+- LoRA Critic 离线验证
+
+尚未完成：
+
+- LoRA Critic 在线接入 Retry
+- `no critic / rule critic / learned critic` 三组在线对比
+- Hard task 的稳定解决
+- DPO 或偏好优化
+
+## License
+
+Apache-2.0
